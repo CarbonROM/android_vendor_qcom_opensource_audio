@@ -1493,8 +1493,7 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
        }
 
 #ifdef COMPRESS_VOIP_ENABLED
-    if ((mEngine->getPhoneState() == AUDIO_MODE_IN_COMMUNICATION) &&
-        (stream == AUDIO_STREAM_VOICE_CALL) &&
+    if (stream == AUDIO_STREAM_VOICE_CALL &&
         audio_is_linear_pcm(config->format)) {
         // let voice stream to go with primary output by default
         // in case direct voip is bypassed
@@ -1542,9 +1541,11 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
             *flags = (audio_output_flags_t)(AUDIO_OUTPUT_FLAG_FAST|AUDIO_OUTPUT_FLAG_PRIMARY);
         }
 #else
-    if (mEngine->getPhoneState() == AUDIO_MODE_IN_COMMUNICATION &&
-        stream == AUDIO_STREAM_VOICE_CALL &&
-        audio_is_linear_pcm(config->format)) {
+    if (stream == AUDIO_STREAM_VOICE_CALL &&
+        audio_is_linear_pcm(config->format) &&
+        (config->channel_mask == 1) &&
+        (config->sample_rate == 8000 || config->sample_rate == 16000 ||
+        config->sample_rate == 32000 || config->sample_rate == 48000)) {
         //check if VoIP output is not opened already
         bool voip_pcm_already_in_use = false;
         for (size_t i = 0; i < mOutputs.size(); i++) {
@@ -1737,15 +1738,19 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
         *flags = (audio_output_flags_t)(AUDIO_OUTPUT_FLAG_NONE);
     }
 
-    // check if direct output for pcm/track offload already exits
+    // check if direct output for pcm/track offload or compress offload already exist
     bool direct_pcm_already_in_use = false;
-    if (*flags == AUDIO_OUTPUT_FLAG_DIRECT) {
+    bool compress_offload_already_in_use = false;
+    if (*flags & AUDIO_OUTPUT_FLAG_DIRECT) {
         for (size_t i = 0; i < mOutputs.size(); i++) {
             sp<SwAudioOutputDescriptor> desc = mOutputs.valueAt(i);
             if (desc->mFlags == AUDIO_OUTPUT_FLAG_DIRECT) {
                 direct_pcm_already_in_use = true;
                 ALOGD("Direct PCM already in use");
-                break;
+            }
+            if (desc->mFlags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) {
+                compress_offload_already_in_use = true;
+                ALOGD("Compress Offload already in use");
             }
         }
         // prevent direct pcm for non-music stream blindly if direct pcm already in use
@@ -1760,9 +1765,10 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
     bool forced_deep = false;
     // only allow deep buffering for music stream type
     if (stream != AUDIO_STREAM_MUSIC) {
-        *flags = (audio_output_flags_t)(*flags &~AUDIO_OUTPUT_FLAG_DEEP_BUFFER);
+        *flags = (audio_output_flags_t)(*flags & ~AUDIO_OUTPUT_FLAG_DEEP_BUFFER);
     } else if (/* stream == AUDIO_STREAM_MUSIC && */
-            (*flags == AUDIO_OUTPUT_FLAG_NONE || *flags == AUDIO_OUTPUT_FLAG_DIRECT) &&
+            (*flags == AUDIO_OUTPUT_FLAG_NONE || *flags == AUDIO_OUTPUT_FLAG_DIRECT ||
+            (*flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD)) &&
             property_get_bool("audio.deep_buffer.media", false /* default_value */) && !isInCall()) {
             forced_deep = true;
     }
@@ -1841,8 +1847,9 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
                 }
             }
             if (outputDesc != NULL) {
-                if (*flags == AUDIO_OUTPUT_FLAG_DIRECT &&
-                     direct_pcm_already_in_use == true &&
+                if ((((*flags == AUDIO_OUTPUT_FLAG_DIRECT) && direct_pcm_already_in_use) ||
+                    ((*flags & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) &&
+                     compress_offload_already_in_use)) &&
                      session != outputDesc->mDirectClientSession) {
                      ALOGV("getOutput() do not reuse direct pcm output because current client (%d) "
                            "is not the same as requesting client (%d) for different output conf",
